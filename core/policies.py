@@ -97,17 +97,19 @@ def mlp_extractor(flat_observations, net_arch, act_fun):
 
     # Build the non-shared part of the network
     latent_policy = latent
+    latent_adv = latent
     latent_value = latent
     for idx, (pi_layer_size, vf_layer_size) in enumerate(zip_longest(policy_only_layers, value_only_layers)):
         if pi_layer_size is not None:
             assert isinstance(pi_layer_size, int), "Error: net_arch[-1]['pi'] must only contain integers."
             latent_policy = act_fun(linear(latent_policy, "pi_fc{}".format(idx), pi_layer_size, init_scale=np.sqrt(2)))
+            latent_adv = act_fun(linear(latent_policy, "adv_fc{}".format(idx), pi_layer_size, init_scale=np.sqrt(2)))
 
         if vf_layer_size is not None:
             assert isinstance(vf_layer_size, int), "Error: net_arch[-1]['vf'] must only contain integers."
             latent_value = act_fun(linear(latent_value, "vf_fc{}".format(idx), vf_layer_size, init_scale=np.sqrt(2)))
 
-    return latent_policy, latent_value
+    return latent_policy, latent_value, latent_adv
 
 
 class BasePolicy(ABC):
@@ -396,7 +398,15 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
             elif feature_extraction == "mlp" and self.pdtype.probability_distribution_class() == DiagGaussianProbabilityDistribution:
                 # TODO make a mlp version
-                raise NotImplementedError
+                pi_latent, vf_latent, pi_adv_latent = mlp_extractor(self.processed_obs, net_arch, act_fun, **kwargs)
+                
+                pi_adv_latent_2 = tf.nn.elu(
+                    linear(pi_adv_latent, 'pi_adv_latent', n_hidden=128, init_scale=np.sqrt(2)))
+                
+                # ac_space.n * 2 for both mean and logstd.
+                # This is not logits actually, but used the same variable name to minimize the implementation effort.
+                self.pi_adv_logits = linear(pi_adv_latent_2, 'pi_adv_latent_2', ac_space.shape[-1] * 2,
+                                           init_scale=0.01, init_bias=0.0)
 
             self._value_fn = linear(vf_latent, 'vf', 1)
 
