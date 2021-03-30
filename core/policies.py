@@ -261,7 +261,7 @@ class ActorCriticPolicy(BasePolicy):
             if isinstance(self.proba_distribution, CategoricalProbabilityDistribution):
                 self._policy_proba = tf.nn.softmax(self.policy)
             elif isinstance(self.proba_distribution, DiagGaussianProbabilityDistribution):
-                self._policy_proba = [self.proba_distribution.mean, self.proba_distribution.std]
+                self._policy_proba = self.proba_distribution.flat
             elif isinstance(self.proba_distribution, BernoulliProbabilityDistribution):
                 self._policy_proba = tf.nn.sigmoid(self.policy)
             elif isinstance(self.proba_distribution, MultiCategoricalProbabilityDistribution):

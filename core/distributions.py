@@ -244,7 +244,7 @@ class DiagGaussianProbabilityDistributionType(ProbabilityDistributionType):
         # logstd = linear(pi_latent_vector, 'pi/logstd', self.size, init_scale=init_scale, init_bias=init_bias)
         pdparam = tf.concat([mean, mean * 0.0 + logstd], axis=1)
         q_values = linear(vf_latent_vector, 'q', self.size, init_scale=init_scale, init_bias=init_bias)
-        return self.proba_distribution_from_flat(pdparam), mean, q_values
+        return self.proba_distribution_from_flat(pdparam), pdparam
 
     def param_shape(self):
         return [2 * self.size]

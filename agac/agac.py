@@ -13,6 +13,17 @@ from core.tf_util import total_episode_reward_logger, linear_schedule, get_sched
 from core.cmd_util import swap_and_flatten
 
 
+def diag_gaussian_neglogp(mean, logstd, std, x):
+    return 0.5 * tf.reduce_sum(tf.square((x - mean) / std), axis=-1) \
+            + 0.5 * np.log(2.0 * np.pi) * tf.cast(tf.shape(x)[-1], tf.float32) \
+            + tf.reduce_sum(logstd, axis=-1)
+
+
+def diag_gaussian_kl(x_mean, x_logstd, x_std, y_mean, y_logstd, y_std):
+    tf.reduce_sum(y_logstd - x_logstd + (tf.square(x_std) + tf.square(x_mean - y_mean)) /
+                             (2.0 * tf.square(y_std)) - 0.5, axis=-1)
+
+    
 class AGAC(ActorCriticRLModel):
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=linear_schedule(0.001),
                  vf_coef=0.5, max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2,
@@ -109,13 +120,20 @@ class AGAC(ActorCriticRLModel):
                     self.true_rewards_ph = tf.compat.v1.placeholder(tf.float32, [None], name="true_rewards_ph")
                     self.old_pi_neglogpac_ph = tf.compat.v1.placeholder(tf.float32, [None], name="old_pi_neglogpac_ph")
                     self.old_pi_probas_ph = tf.compat.v1.placeholder(tf.float32, [None, None], name="old_pi_probas_ph")
-                    self.old_pi_adv_logits_ph = tf.compat.v1.placeholder(tf.float32, [None, None],
-                                                                         name="old_pi_adv_logits_ph")
+                    self.old_pi_adv_logits_ph = tf.compat.v1.placeholder(tf.float32, [None, None], name="old_pi_adv_logits_ph")
                     self.old_vpred_ph = tf.compat.v1.placeholder(tf.float32, [None], name="old_vpred_ph")
                     self.learning_rate_ph = tf.compat.v1.placeholder(tf.float32, [], name="learning_rate_ph")
                     self.agac_c_ph = tf.compat.v1.placeholder(tf.float32, [], name="agac_c_ph")
                     self.clip_range_ph = tf.compat.v1.placeholder(tf.float32, [], name="clip_range_ph")
-
+                    
+                    # Prepare Diag. Gaussian parameters
+                    old_adv_mean, old_adv_logstd = tf.split(axis=len(self.old_pi_adv_logits_ph.shape) - 1, num_or_size_splits=2, value=self.old_pi_adv_logits_ph)
+                    old_mean, old_logstd = tf.split(axis=len(self.old_pi_probas_ph.shape) - 1, num_or_size_splits=2, value=self.old_pi_probas_ph)
+                    adv_mean, adv_logstd = tf.split(axis=len(train_model.pi_adv_logits.shape) - 1, num_or_size_splits=2, value=train_model.pi_adv_logits)
+                    old_adv_std = tf.exp(old_adv_logstd)
+                    old_std = tf.exp(old_logstd)
+                    adv_std = tf.exp(adv_logstd)
+                    
                     neglogpac = train_model.proba_distribution.neglogp(self.action_ph)
                     self.entropy = tf.reduce_mean(train_model.proba_distribution.entropy())
 
@@ -129,23 +147,28 @@ class AGAC(ActorCriticRLModel):
                                     tf.clip_by_value(train_model.value_flat - self.old_vpred_ph,
                                                      - self.clip_range_vf_ph, self.clip_range_vf_ph)
 
-                    self.old_pi_adv_neglogpac = tf.nn.softmax_cross_entropy_with_logits_v2(
+                    """self.old_pi_adv_neglogpac = tf.nn.softmax_cross_entropy_with_logits_v2(
                         logits=self.old_pi_adv_logits_ph,
                         labels=tf.one_hot(tf.stop_gradient(self.action_ph),
-                                          train_model.pi_adv_logits.get_shape().as_list()[-1]))
+                                          train_model.pi_adv_logits.get_shape().as_list()[-1]))"""
+                    self.old_pi_adv_neglogpac = diag_gaussian_neglogp(old_adv_mean, old_adv_logstd, old_adv_std, tf.stop_gradient(self.action_ph))
 
-                    old_pi_softmax = self.old_pi_probas_ph
+                    """old_pi_softmax = self.old_pi_probas_ph
                     pi_adv_softmax = tf.nn.softmax(train_model.pi_adv_logits)
-                    old_pi_adv_softmax = tf.nn.softmax(self.old_pi_adv_logits_ph)
+                    old_pi_adv_softmax = tf.nn.softmax(self.old_pi_adv_logits_ph)"""
 
                     # KL
-                    pi_piadv_kl = tf.stop_gradient(
+                    """pi_piadv_kl = tf.stop_gradient(
                         tf.reduce_sum(old_pi_softmax * tf.math.log(old_pi_softmax / (old_pi_adv_softmax + 1e-8) + 1e-8),
-                                      axis=-1))
-
+                                      axis=-1))"""
+                    pi_piadv_kl = tf.reduce_sum(old_adv_logstd - old_logstd + (tf.square(old_std) + tf.square(old_mean - old_adv_mean)) /
+                                                (2.0 * tf.square(old_std)) - 0.5, axis=-1)
+                    
+                    
                     # Adversary loss
-                    l_adv = tf.reduce_sum(tf.stop_gradient(old_pi_softmax) * tf.math.log(
-                        tf.stop_gradient(old_pi_softmax) / (pi_adv_softmax + 1e-8) + 1e-8), axis=-1)
+                    l_adv = tf.reduce_sum(adv_logstd - tf.stop_gradient(old_logstd) +
+                                          (tf.square(tf.stop_gradient(old_std)) + tf.square(tf.stop_gradient(old_mean) - adv_mean)) /
+                                          (2.0 * tf.square(adv_std)) - 0.5, axis=-1)
 
                     # Value function loss
                     vf_losses1 = tf.square(
