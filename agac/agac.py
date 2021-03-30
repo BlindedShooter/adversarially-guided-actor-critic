@@ -455,7 +455,32 @@ class AGAC(ActorCriticRLModel):
 
             callback.on_training_end()
             return self
+        
+        
+    def predict(self, observation, state=None, mask=None, deterministic=False):
+        if state is None:
+            state = self.initial_state
+        if mask is None:
+            mask = [False for _ in range(self.n_envs)]
+        observation = np.array(observation)
+        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
+        observation = observation.reshape((-1,) + self.observation_space.shape)
+        actions, _, states, _, _, _ = self.step(observation, state, mask, deterministic=deterministic)
+        
+        clipped_actions = actions
+        # Clip the actions to avoid out of bound error
+        if isinstance(self.action_space, gym.spaces.Box):
+            clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+        if not vectorized_env:
+            if state is not None:
+                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
+            clipped_actions = clipped_actions[0]
+
+        return clipped_actions, states
+    
+    
     def save(self, save_path, cloudpickle=False):
         data = {
             "gamma": self.gamma,
@@ -552,10 +577,10 @@ class Runner(AbstractEnvRunner):
                     # Return dummy values
                     return [None] * 9
 
-            for info in infos:
-                maybe_ep_info = info.get('episode')
-                if maybe_ep_info is not None:
-                    ep_infos.append(maybe_ep_info)
+            #for info in infos:
+            #    maybe_ep_info = info.get('episode')
+            #    if maybe_ep_info is not None:
+            #        ep_infos.append(maybe_ep_info)
             mb_rewards.append(rewards)
         # Batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
